@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from fastapi import FastAPI,HTTPException,status,Depends
 from jose import JWTError, jwt
-import logging
+#import logging
 import secrets
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from models import TodoItem,TodoItemResponse,UpdateTodoItem, UserLogin, UserLoginResponse, UserRegistration, UserRegistrationResponse
@@ -10,17 +10,17 @@ from typing import Annotated, List, Optional
 from passlib.context import CryptContext
 
 # Configure logging
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+#logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
 app=FastAPI()
 SECRET_KEY =secrets.token_urlsafe(32)
-logging.debug(f'Secret key: {SECRET_KEY }')
+print(f'Secret key: {SECRET_KEY }')
 
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 # Password hashing context
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 # Database setup
 def get_db_connection():
     conn = sqlite3.connect('todo.db')
@@ -33,7 +33,9 @@ def create_table():
     CREATE TABLE IF NOT EXISTS todos (
         id INTEGER PRIMARY KEY,
         title TEXT NOT NULL,
-        description TEXT
+        description TEXT,
+        user_id INTEGER NOT NULL,
+        FOREIGN KEY (user_id) REFERENCES users (id)
     )
     ''')
     cursor.execute('''
@@ -178,7 +180,7 @@ async def login_user(user: UserLogin):
     return UserLoginResponse(username=user.username, message="Login successful")'''
 
 
-@app.post("/login", response_model=UserLoginResponse, tags=["User Authentication"])
+@app.post("/token", response_model=UserLoginResponse ,tags=["User Authentication"])
 async def login_user(form_data: Annotated[OAuth2PasswordRequestForm, Depends()]):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -205,7 +207,7 @@ async def login_user(form_data: Annotated[OAuth2PasswordRequestForm, Depends()])
         username=form_data.username,
         access_token=access_token,
         token_type="bearer",
-        message="Login successful"
+        message="auth token received"
     )
 
 #API
@@ -213,64 +215,65 @@ async def login_user(form_data: Annotated[OAuth2PasswordRequestForm, Depends()])
 def create_todo_item(item: TodoItem, current_user: Annotated[UserRegistrationResponse, Depends(get_current_active_user)]):
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute('INSERT INTO todos (title, description) VALUES (?, ?)', (item.title, item.description))
+    cursor.execute('INSERT INTO todos (title, description, user_id) VALUES (?, ?, ?)', (item.title, item.description, current_user['id']))
     conn.commit()
     item_id = cursor.lastrowid
     conn.close()
     return TodoItemResponse(id=item_id, title=item.title, description=item.description)
 
 @app.get('/todos', response_model=List[TodoItemResponse])
-def read_todo_items( current_user: Annotated[UserRegistrationResponse, Depends(get_current_active_user)]):
+def read_todo_items(current_user: Annotated[UserRegistrationResponse, Depends(get_current_active_user)]):
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute('SELECT * FROM todos')
+    cursor.execute('SELECT * FROM todos WHERE user_id = ?', (current_user['id'],))
     rows = cursor.fetchall()
     conn.close()
     return [TodoItemResponse(id=row['id'], title=row['title'], description=row['description']) for row in rows]
+
 @app.get('/todos/{todo_id}', response_model=TodoItemResponse)
 def read_todo_item(todo_id: int, current_user: Annotated[UserRegistrationResponse, Depends(get_current_active_user)]):
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute('SELECT * FROM todos WHERE id = ?', (todo_id,))
+    cursor.execute('SELECT * FROM todos WHERE id = ? AND user_id = ?', (todo_id, current_user['id']))
     row = cursor.fetchone()
     conn.close()
     if row is None:
         raise HTTPException(status_code=404, detail="Todo item not found")
-    return dict(row)    
+    return dict(row)
+
     
 @app.patch('/todos/{todo_id}', response_model=TodoItemResponse)
 def update_todo_item(todo_id: int, item: UpdateTodoItem, current_user: Annotated[UserRegistrationResponse, Depends(get_current_active_user)]):
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute('SELECT * FROM todos WHERE id = ?', (todo_id,))
+    cursor.execute('SELECT * FROM todos WHERE id = ? AND user_id = ?', (todo_id, current_user['id']))
     existing_item = cursor.fetchone()
     if existing_item is None:
         conn.close()
         raise HTTPException(status_code=404, detail="Todo item not found")
     
-    
     updated_data = item.model_dump(exclude_unset=True)
-    
     updated_title = updated_data.get("title", existing_item["title"])
     updated_description = updated_data.get("description", existing_item["description"])
     
-   
-    cursor.execute('UPDATE todos SET title = ?, description = ? WHERE id = ?', 
-                   (updated_title, updated_description, todo_id))
+    cursor.execute('UPDATE todos SET title = ?, description = ? WHERE id = ? AND user_id = ?', 
+                   (updated_title, updated_description, todo_id, current_user['id']))
     conn.commit()
     conn.close()
     return {**updated_data, 'id': todo_id}
+
 @app.delete('/todos/{todo_id}', response_model=dict)
 def delete_todo_item(todo_id: int, current_user: Annotated[UserRegistrationResponse, Depends(get_current_active_user)]):
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute('SELECT * FROM todos WHERE id = ?', (todo_id,))
+    cursor.execute('SELECT * FROM todos WHERE id = ? AND user_id = ?', (todo_id, current_user['id']))
     existing_item = cursor.fetchone()
     if existing_item is None:
         conn.close()
         raise HTTPException(status_code=404, detail="Todo item not found")
     
-    cursor.execute('DELETE FROM todos WHERE id = ?', (todo_id,))
+    cursor.execute('DELETE FROM todos WHERE id = ? AND user_id = ?', (todo_id, current_user['id']))
     conn.commit()
     conn.close()
     return {"message": "Todo item deleted successfully"}
+
